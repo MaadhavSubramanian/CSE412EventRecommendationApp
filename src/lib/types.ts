@@ -6,7 +6,7 @@ export type EventRow = {
   description: string | null;
   start_at: string;
   end_at: string;
-  status: 'scheduled' | 'cancelled' | 'postponed';
+  status: "scheduled" | "cancelled" | "postponed";
   created_at: string;
   updated_at: string;
   event_category?: { category: string }[] | null;
@@ -16,6 +16,8 @@ export type EventRow = {
     city: string | null;
     state: string | null;
     street_address: string | null;
+    lat: number | null;
+    lon: number | null;
   } | null;
 };
 

@@ -7,6 +7,26 @@ import CreateEventModal from "@/components/CreateEventModal";
 import { supabase } from "@/lib/supabaseClient";
 import type { EventRow, OrganizerRow, VenueRow } from "@/lib/types";
 
+type Coordinates = {
+  lat: number;
+  lon: number;
+};
+
+function milesBetween(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const R = 3958.8; // Earth radius in miles
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
 // create form moved into CreateEventModal component
 
 const emptyFilters: Filters = {
@@ -15,6 +35,7 @@ const emptyFilters: Filters = {
   status: "",
   startDate: "",
   endDate: "",
+  radiusMiles: null,
 };
 
 const PAGE_SIZE = 10;
@@ -29,6 +50,9 @@ export default function HomePage() {
   const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [page, setPage] = useState(1);
   const [showCreate, setShowCreate] = useState(false);
+  const [userLocation, setUserLocation] = useState<Coordinates | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
 
   useEffect(() => {
     void loadAll();
@@ -36,7 +60,7 @@ export default function HomePage() {
 
   useEffect(() => {
     setPage(1);
-  }, [events, filters]);
+  }, [events, filters, userLocation]);
 
   async function loadAll() {
     setLoading(true);
@@ -46,7 +70,7 @@ export default function HomePage() {
         supabase
           .from("event")
           .select(
-            "event_id, organizer_id, venue_id, title, description, start_at, end_at, status, created_at, updated_at, event_category(category), organizer:organizer_id(org_name, website_url), venue:venue_id(name, city, state, street_address)",
+            "event_id, organizer_id, venue_id, title, description, start_at, end_at, status, created_at, updated_at, event_category(category), organizer:organizer_id(org_name, website_url), venue:venue_id(name, city, state, street_address, lat, lon)",
           )
           .order("start_at", { ascending: true }),
         supabase
@@ -120,10 +144,30 @@ export default function HomePage() {
       if (startMs && (Number.isNaN(startTime) || startTime < startMs))
         return false;
       if (endMs && (Number.isNaN(startTime) || startTime > endMs)) return false;
+      if (filters.radiusMiles) {
+        if (!userLocation) return false;
+        const venueLat = event.venue?.lat ?? null;
+        const venueLon = event.venue?.lon ?? null;
+        if (
+          venueLat === null ||
+          venueLon === null ||
+          Number.isNaN(venueLat) ||
+          Number.isNaN(venueLon)
+        ) {
+          return false;
+        }
+        const distance = milesBetween(
+          userLocation.lat,
+          userLocation.lon,
+          venueLat,
+          venueLon,
+        );
+        if (distance > filters.radiusMiles) return false;
+      }
 
       return true;
     });
-  }, [events, filters]);
+  }, [events, filters, userLocation]);
 
   const totalPages = filteredEvents.length
     ? Math.ceil(filteredEvents.length / PAGE_SIZE)
@@ -152,6 +196,43 @@ export default function HomePage() {
     () => new Set(venues.map((v) => v.name)).size,
     [venues],
   );
+
+  function handleRequestLocation() {
+    if (locating) return;
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setLocationError("Geolocation is not supported in this browser.");
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setUserLocation({
+          lat: position.coords.latitude,
+          lon: position.coords.longitude,
+        });
+        setLocationError(null);
+        setLocating(false);
+      },
+      (err) => {
+        setLocationError(err.message || "Failed to retrieve location.");
+        setLocating(false);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+      },
+    );
+  }
+
+  const locationStatus = userLocation
+    ? `Using your location (${userLocation.lat.toFixed(
+        2,
+      )}, ${userLocation.lon.toFixed(2)})`
+    : locationError
+    ? locationError
+    : filters.radiusMiles
+    ? "Location required to apply distance filter."
+    : "Location not set.";
 
   // create logic moved into CreateEventModal
 
@@ -201,6 +282,10 @@ export default function HomePage() {
           filters={filters}
           onChange={setFilters}
           disabled={loading || events.length === 0}
+          hasLocation={Boolean(userLocation)}
+          locating={locating}
+          onRequestLocation={handleRequestLocation}
+          locationStatus={locationStatus}
         />
 
         <div className="action-row">

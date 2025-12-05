@@ -1,11 +1,12 @@
-import type { EventRow } from '@/lib/types';
+import type { EventRow } from "@/lib/types";
 
 export type Filters = {
   query: string;
   category: string;
-  status: EventRow['status'] | '';
+  status: EventRow["status"] | "";
   startDate: string;
   endDate: string;
+  radiusMiles: number | null;
 };
 
 type Props = {
@@ -13,20 +14,34 @@ type Props = {
   filters: Filters;
   onChange: (next: Filters) => void;
   disabled?: boolean;
+  hasLocation: boolean;
+  locating: boolean;
+  onRequestLocation: () => void;
+  locationStatus: string;
 };
 
-export function FilterBar({ categories, filters, onChange, disabled }: Props) {
+export function FilterBar({
+  categories,
+  filters,
+  onChange,
+  disabled,
+  hasLocation,
+  locating,
+  onRequestLocation,
+  locationStatus,
+}: Props) {
   const update = (next: Partial<Filters>) => {
     onChange({ ...filters, ...next });
   };
 
   const clear = () =>
     onChange({
-      query: '',
-      category: '',
-      status: '',
-      startDate: '',
-      endDate: ''
+      query: "",
+      category: "",
+      status: "",
+      startDate: "",
+      endDate: "",
+      radiusMiles: null,
     });
 
   return (
@@ -50,8 +65,7 @@ export function FilterBar({ categories, filters, onChange, disabled }: Props) {
             className="input"
             value={filters.category}
             onChange={(e) => update({ category: e.target.value })}
-            disabled={disabled}
-          >
+            disabled={disabled}>
             <option value="">All categories</option>
             {categories.map((cat) => (
               <option key={cat} value={cat}>
@@ -88,9 +102,10 @@ export function FilterBar({ categories, filters, onChange, disabled }: Props) {
           <select
             className="input"
             value={filters.status}
-            onChange={(e) => update({ status: e.target.value as Filters['status'] })}
-            disabled={disabled}
-          >
+            onChange={(e) =>
+              update({ status: e.target.value as Filters["status"] })
+            }
+            disabled={disabled}>
             <option value="">Any status</option>
             <option value="scheduled">Scheduled</option>
             <option value="postponed">Postponed</option>
@@ -98,8 +113,46 @@ export function FilterBar({ categories, filters, onChange, disabled }: Props) {
           </select>
         </label>
 
+        <label className="field">
+          <span>Distance</span>
+          <select
+            className="input"
+            value={filters.radiusMiles ?? ""}
+            onChange={(e) =>
+              update({
+                radiusMiles: e.target.value ? Number(e.target.value) : null,
+              })
+            }
+            disabled={disabled}>
+            <option value="">Anywhere</option>
+            <option value="5">Within 5 miles</option>
+            <option value="10">Within 10 miles</option>
+            <option value="15">Within 15 miles</option>
+          </select>
+        </label>
+
+        <div className="field location-control">
+          <span>Location</span>
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={onRequestLocation}
+            disabled={disabled || locating}>
+            {locating
+              ? "Locating…"
+              : hasLocation
+              ? "Update location"
+              : "Use my location"}
+          </button>
+          <p className="location-status">{locationStatus}</p>
+        </div>
+
         <div className="filter-actions">
-          <button type="button" className="btn ghost" onClick={clear} disabled={disabled}>
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={clear}
+            disabled={disabled}>
             Clear filters
           </button>
         </div>

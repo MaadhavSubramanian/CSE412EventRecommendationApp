@@ -1,7 +1,8 @@
-import type { PostgrestError, SupabaseClient } from '@supabase/supabase-js';
-import type { EventRow } from '../../src/lib/types';
-import { collectSourceEvents } from './sources';
-import type { EventSourceConfig, NormalizedEvent } from './types';
+import type { PostgrestError, SupabaseClient } from "@supabase/supabase-js";
+import type { EventRow } from "../../src/lib/types";
+import { collectSourceEvents } from "./sources";
+import type { EventSourceConfig, NormalizedEvent } from "./types";
+import { DUMMY_VENUES, pickRandomStatus, pickRandomVenueId } from "./dummyData";
 
 export const DEFAULT_LOOKBACK_DAYS = 30;
 
@@ -30,12 +31,13 @@ type InsertEventPayload = {
   description: string | null;
   start_at: string;
   end_at: string;
-  status: EventRow['status'];
+  status: EventRow["status"];
 };
 
 type LookupMaps = {
   organizerMap: Map<string, number>;
   venueMap: Map<string, number>;
+  dummyVenueIds: number[];
 };
 
 type PrepareParams = {
@@ -47,7 +49,7 @@ type PrepareParams = {
 export async function prepareIngestionRun({
   supabase,
   sourceConfigs,
-  lookbackDays = DEFAULT_LOOKBACK_DAYS
+  lookbackDays = DEFAULT_LOOKBACK_DAYS,
 }: PrepareParams): Promise<PrepareIngestionResult> {
   if (!sourceConfigs.length) {
     return { pending: [], normalizedCount: 0, dedupedCount: 0 };
@@ -60,14 +62,17 @@ export async function prepareIngestionRun({
     return { pending: [], normalizedCount: 0, dedupedCount: 0 };
   }
 
-  const existingFingerprints = await loadExistingFingerprints(supabase, lookbackDays);
+  const existingFingerprints = await loadExistingFingerprints(
+    supabase,
+    lookbackDays,
+  );
   const deduped = dedupeEvents(normalizedEvents, existingFingerprints);
 
   if (!deduped.length) {
     return {
       pending: [],
       normalizedCount: normalizedEvents.length,
-      dedupedCount: 0
+      dedupedCount: 0,
     };
   }
 
@@ -77,22 +82,22 @@ export async function prepareIngestionRun({
   return {
     pending,
     normalizedCount: normalizedEvents.length,
-    dedupedCount: deduped.length
+    dedupedCount: deduped.length,
   };
 }
 
 export async function insertPendingInserts(
   client: SupabaseClient,
-  pending: PendingInsert[]
+  pending: PendingInsert[],
 ): Promise<InsertResult> {
   if (!pending.length) {
     return { eventsInserted: 0, categoriesInserted: 0 };
   }
 
   const { data, error } = await client
-    .from('event')
+    .from("event")
     .insert(pending.map((item) => item.payload))
-    .select('event_id');
+    .select("event_id");
 
   if (error) throw error;
 
@@ -107,13 +112,15 @@ export async function insertPendingInserts(
   });
 
   if (categoryRows.length) {
-    const { error: catError } = await client.from('event_category').insert(categoryRows);
+    const { error: catError } = await client
+      .from("event_category")
+      .insert(categoryRows);
     if (catError) throw catError;
   }
 
   return {
     eventsInserted: inserted.length,
-    categoriesInserted: categoryRows.length
+    categoriesInserted: categoryRows.length,
   };
 }
 
@@ -128,19 +135,22 @@ async function fetchAllSources(configs: EventSourceConfig[]) {
         console.error(`Failed to collect ${config.key}:`, error);
         return [];
       }
-    })
+    }),
   );
 
   return results.flat();
 }
 
-async function loadExistingFingerprints(client: SupabaseClient, lookbackDays: number) {
+async function loadExistingFingerprints(
+  client: SupabaseClient,
+  lookbackDays: number,
+) {
   const since = new Date();
   since.setDate(since.getDate() - lookbackDays);
   const { data, error } = await client
-    .from('event')
-    .select('title, start_at')
-    .gte('start_at', since.toISOString());
+    .from("event")
+    .select("title, start_at")
+    .gte("start_at", since.toISOString());
 
   if (error) throw error;
 
@@ -152,7 +162,10 @@ async function loadExistingFingerprints(client: SupabaseClient, lookbackDays: nu
   return fingerprints;
 }
 
-function dedupeEvents(events: NormalizedEvent[], existingFingerprints: Set<string>) {
+function dedupeEvents(
+  events: NormalizedEvent[],
+  existingFingerprints: Set<string>,
+) {
   const seen = new Set(existingFingerprints);
   const unique: NormalizedEvent[] = [];
 
@@ -173,8 +186,8 @@ function makeFingerprint(title: string, isoStart: string) {
 
 async function loadLookups(client: SupabaseClient): Promise<LookupMaps> {
   const [organizerRes, venueRes] = await Promise.all([
-    client.from('organizer').select('organizer_id, org_name'),
-    client.from('venue').select('venue_id, name')
+    client.from("organizer").select("organizer_id, org_name"),
+    client.from("venue").select("venue_id, name"),
   ]);
 
   handlePostgrestError(organizerRes.error);
@@ -190,7 +203,9 @@ async function loadLookups(client: SupabaseClient): Promise<LookupMaps> {
     venueMap.set(normalizeName(row.name), row.venue_id);
   });
 
-  return { organizerMap, venueMap };
+  const dummyVenueIds = await ensureDummyVenues(client, venueMap);
+
+  return { organizerMap, venueMap, dummyVenueIds };
 }
 
 function handlePostgrestError(error: PostgrestError | null) {
@@ -202,7 +217,7 @@ function handlePostgrestError(error: PostgrestError | null) {
 function buildPendingInsertList(
   events: NormalizedEvent[],
   configByKey: Map<string, EventSourceConfig>,
-  lookups: LookupMaps
+  lookups: LookupMaps,
 ): PendingInsert[] {
   const pending: PendingInsert[] = [];
 
@@ -215,7 +230,7 @@ function buildPendingInsertList(
       normalized: event,
       config,
       payload,
-      categories: event.categories
+      categories: event.categories,
     });
   });
 
@@ -225,32 +240,44 @@ function buildPendingInsertList(
 function buildPayload(
   event: NormalizedEvent,
   config: EventSourceConfig,
-  lookups: LookupMaps
+  lookups: LookupMaps,
 ): InsertEventPayload | null {
   const title = event.title.trim();
   if (!title) return null;
 
   const startIso = event.start.toISOString();
-  const endDate = event.end.getTime() > event.start.getTime()
-    ? event.end
-    : new Date(event.start.getTime() + 60 * 60 * 1000);
+  const endDate =
+    event.end.getTime() > event.start.getTime()
+      ? event.end
+      : new Date(event.start.getTime() + 60 * 60 * 1000);
   const endIso = endDate.toISOString();
+
+  const resolvedVenueId =
+    resolveVenueId(event, config, lookups.venueMap) ??
+    pickRandomVenueId(lookups.dummyVenueIds);
+  if (!resolvedVenueId) {
+    console.warn(
+      "[ingest] Unable to resolve venue for event, skipping:",
+      title,
+    );
+    return null;
+  }
 
   return {
     organizer_id: resolveOrganizerId(event, config, lookups.organizerMap),
-    venue_id: resolveVenueId(event, config, lookups.venueMap),
+    venue_id: resolvedVenueId,
     title,
     description: event.description?.trim() || null,
     start_at: startIso,
     end_at: endIso,
-    status: event.status ?? config.defaultStatus ?? 'scheduled'
+    status: event.status ?? config.defaultStatus ?? pickRandomStatus(),
   };
 }
 
 function resolveOrganizerId(
   event: NormalizedEvent,
   config: EventSourceConfig,
-  organizerMap: Map<string, number>
+  organizerMap: Map<string, number>,
 ) {
   if (config.defaultOrganizerId) return config.defaultOrganizerId;
   const fromEvent = lookupId(event.organizer, organizerMap);
@@ -265,7 +292,7 @@ function resolveOrganizerId(
 function resolveVenueId(
   event: NormalizedEvent,
   config: EventSourceConfig,
-  venueMap: Map<string, number>
+  venueMap: Map<string, number>,
 ) {
   if (config.defaultVenueId) return config.defaultVenueId;
   const fromEvent = lookupId(event.venue, venueMap);
@@ -284,5 +311,30 @@ function lookupId(value: string | null | undefined, map: Map<string, number>) {
 }
 
 function normalizeName(value?: string) {
-  return value?.trim().toLowerCase() ?? '';
+  return value?.trim().toLowerCase() ?? "";
+}
+
+async function ensureDummyVenues(
+  client: SupabaseClient,
+  venueMap: Map<string, number>,
+) {
+  const missing = DUMMY_VENUES.filter(
+    (venue) => !venueMap.has(normalizeName(venue.name)),
+  );
+  if (missing.length) {
+    const { data, error } = await client
+      .from("venue")
+      .insert(missing)
+      .select("venue_id, name");
+    handlePostgrestError(error);
+    (data ?? []).forEach((row) => {
+      venueMap.set(normalizeName(row.name), row.venue_id);
+    });
+  }
+
+  const dummyIds = DUMMY_VENUES.map((venue) =>
+    venueMap.get(normalizeName(venue.name)),
+  ).filter((val): val is number => typeof val === "number");
+
+  return dummyIds;
 }
