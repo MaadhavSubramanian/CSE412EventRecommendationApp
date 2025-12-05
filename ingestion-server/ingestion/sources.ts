@@ -11,8 +11,58 @@ import type {
   NormalizedEvent,
   RssSourceConfig,
 } from "./types";
+import { DUMMY_VENUES } from "./dummyData";
 
 const rssParser = new RSSParser();
+const geocodeCache = new Map<string, GeocodeResult | null>();
+
+const PLACEHOLDER_LOCATION_VALUE = "sign in to download the location";
+const RANDOM_FALLBACK_LOCATIONS = [
+  "Memorial Union, 301 E Orange St, Tempe, AZ 85281, United States",
+  "Sun Devil Stadium, 500 E Veterans Way, Tempe, AZ 85287, United States",
+  "Hayden Library, 300 E Orange St, Tempe, AZ 85281, United States",
+  "Student Pavilion, 400 E Orange St, Tempe, AZ 85281, United States",
+  "Creative Commons, 501 E Orange St, Tempe, AZ 85281, United States",
+  "Durham Hall, 851 S Cady Mall, Tempe, AZ 85281, United States",
+  "Byron Mall, Tempe, AZ 85281, United States",
+  "Desert Financial Arena, 600 E Veterans Way, Tempe, AZ 85281, United States",
+  "Engineering Center Wing G, 501 E Tyler Mall, Tempe, AZ 85281, United States",
+  "Biodesign Institute, 727 E Tyler St, Tempe, AZ 85281, United States",
+];
+
+type GeocodeResult = {
+  lat: number;
+  lon: number;
+  street?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postal_code?: string | null;
+};
+
+async function geocodeAddress(address: string): Promise<GeocodeResult | null> {
+  const key = address.trim().toLowerCase();
+  if (!key) return null;
+  if (geocodeCache.has(key)) {
+    return geocodeCache.get(key) ?? null;
+  }
+
+  const dummyVenue = selectDummyVenueForKey(key);
+  if (!dummyVenue) {
+    geocodeCache.set(key, null);
+    return null;
+  }
+
+  const result: GeocodeResult = {
+    lat: dummyVenue.lat,
+    lon: dummyVenue.lon,
+    street: dummyVenue.street_address,
+    city: dummyVenue.city,
+    state: dummyVenue.state,
+    postal_code: dummyVenue.postal_code,
+  };
+  geocodeCache.set(key, result);
+  return result;
+}
 const jsonSchema = z.array(
   z.object({
     id: z.string(),
@@ -27,11 +77,11 @@ const jsonSchema = z.array(
       .enum(["scheduled", "cancelled", "postponed"])
       .optional()
       .nullable(),
-  })
+  }),
 );
 
 export async function collectSourceEvents(
-  config: EventSourceConfig
+  config: EventSourceConfig,
 ): Promise<NormalizedEvent[]> {
   if (!config.enabled && config.enabled !== undefined) {
     return [];
@@ -51,7 +101,7 @@ export async function collectSourceEvents(
 
 function mergeCategories(
   values: Array<string | undefined | null>,
-  tags?: string[]
+  tags?: string[],
 ) {
   const merged = new Set<string>();
   [...values, ...(tags ?? [])].forEach((cat) => {
@@ -99,49 +149,59 @@ async function readLocal(ref: string) {
 }
 
 async function collectIcsEvents(
-  config: IcsSourceConfig
+  config: IcsSourceConfig,
 ): Promise<NormalizedEvent[]> {
   const calendar = await loadIcsRecords(config.url);
-  const events: NormalizedEvent[] = [];
+  const components = Object.values(calendar).filter(
+    (component): component is ical.VEvent => component.type === "VEVENT",
+  );
 
-  Object.values(calendar).forEach((component) => {
-    if (component.type !== "VEVENT") return;
+  const events = await Promise.all(
+    components.map(async (component): Promise<NormalizedEvent | null> => {
+      const summary = extractText(component.summary);
+      if (!summary) return null;
+      const title = summary.trim();
+      if (!title) return null;
 
-    const summary = extractText(component.summary);
-    if (!summary) return;
-    const title = summary.trim();
-    if (!title) return;
+      const start = parseDate(component.start);
+      if (!start) return null;
+      const end = ensureEnd(
+        start,
+        parseDate(component.end),
+        config.defaultDurationMinutes,
+      );
+      const externalId = component.uid ?? `${title}-${start.toISOString()}`;
+      const organizer = extractOrganizer(component.organizer);
+      const categories = buildCategoriesFromComponent(component);
+      const description = extractText(component.description);
+      const locationText = resolveLocationText(
+        extractText(component.location),
+        config.defaultVenueName ?? null,
+      );
+      const geocode = locationText ? await geocodeAddress(locationText) : null;
 
-    const start = parseDate(component.start);
-    if (!start) return;
-    const end = ensureEnd(
-      start,
-      parseDate(component.end),
-      config.defaultDurationMinutes
-    );
-    const externalId = component.uid ?? `${title}-${start.toISOString()}`;
-    const organizer = extractOrganizer(component.organizer);
-    const categories = toArray(
-      (component as unknown as { categories?: unknown }).categories
-    );
-    const description = extractText(component.description);
-    const location = extractText(component.location);
+      return {
+        sourceKey: config.key,
+        externalId,
+        title,
+        description: description ?? null,
+        start,
+        end,
+        categories: mergeCategories(categories, config.tags),
+        organizer,
+        venue: locationText,
+        venueLat: geocode?.lat ?? null,
+        venueLon: geocode?.lon ?? null,
+        venueStreet: geocode?.street ?? null,
+        venueCity: geocode?.city ?? null,
+        venueState: geocode?.state ?? null,
+        venuePostalCode: geocode?.postal_code ?? null,
+        status: mapIcsStatus(component.status) ?? config.defaultStatus,
+      };
+    }),
+  );
 
-    events.push({
-      sourceKey: config.key,
-      externalId,
-      title,
-      description: description ?? null,
-      start,
-      end,
-      categories: mergeCategories(categories, config.tags),
-      organizer,
-      venue: location ?? config.defaultVenueName ?? null,
-      status: mapIcsStatus(component.status) ?? config.defaultStatus,
-    });
-  });
-
-  return events;
+  return events.filter((event): event is NormalizedEvent => event !== null);
 }
 
 async function loadIcsRecords(url: string) {
@@ -189,8 +249,45 @@ function extractText(value: unknown): string | null {
   return null;
 }
 
+function getRandomFallbackLocation() {
+  if (RANDOM_FALLBACK_LOCATIONS.length === 0) {
+    return null;
+  }
+  const index = Math.floor(Math.random() * RANDOM_FALLBACK_LOCATIONS.length);
+  return RANDOM_FALLBACK_LOCATIONS[index];
+}
+
+function selectDummyVenueForKey(key: string) {
+  if (!DUMMY_VENUES.length) {
+    return null;
+  }
+  let hash = 0;
+  for (let i = 0; i < key.length; i += 1) {
+    hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  }
+  const index = hash % DUMMY_VENUES.length;
+  return DUMMY_VENUES[index] ?? null;
+}
+
+function resolveLocationText(
+  rawLocation?: string | null,
+  fallback?: string | null,
+) {
+  if (!rawLocation) {
+    return fallback ?? null;
+  }
+  const trimmed = rawLocation.trim();
+  if (!trimmed) {
+    return fallback ?? null;
+  }
+  if (trimmed.toLowerCase() === PLACEHOLDER_LOCATION_VALUE) {
+    return getRandomFallbackLocation() ?? fallback ?? null;
+  }
+  return trimmed;
+}
+
 async function collectRssEvents(
-  config: RssSourceConfig
+  config: RssSourceConfig,
 ): Promise<NormalizedEvent[]> {
   const feed = await loadRss(config.url);
   const defaultDuration = config.defaultDurationMinutes ?? 120;
@@ -238,7 +335,7 @@ async function loadRss(url: string) {
 }
 
 async function collectJsonEvents(
-  config: JsonSourceConfig
+  config: JsonSourceConfig,
 ): Promise<NormalizedEvent[]> {
   const payload = await loadJson(config.url);
 
@@ -289,8 +386,59 @@ function mapIcsStatus(status?: string | null) {
   return "scheduled";
 }
 
-function toArray(value: unknown): string[] {
-  if (!value) return [];
-  if (Array.isArray(value)) return value.map((entry) => String(entry));
-  return [String(value)];
+function buildCategoriesFromComponent(component: Record<string, unknown>) {
+  const categories: string[] = [];
+  const raw = (component as { categories?: unknown }).categories;
+  if (Array.isArray(raw)) {
+    raw.forEach((entry) => {
+      if (!entry) return;
+      if (typeof entry === "string") {
+        pushCategory(categories, entry);
+        return;
+      }
+      if (
+        typeof entry === "object" &&
+        entry !== null &&
+        "val" in entry &&
+        typeof (entry as { val?: unknown }).val === "string"
+      ) {
+        pushCategory(categories, (entry as { val: string }).val);
+        return;
+      }
+      if (
+        typeof entry === "object" &&
+        entry !== null &&
+        "params" in entry &&
+        (entry as { params?: Record<string, unknown> }).params
+      ) {
+        const params = (entry as { params: Record<string, unknown> }).params;
+        Object.values(params).forEach((value) => {
+          if (typeof value === "string") {
+            pushCategory(categories, value);
+          } else if (Array.isArray(value)) {
+            value
+              .map((item) => (typeof item === "string" ? item : String(item)))
+              .forEach((item) => pushCategory(categories, item));
+          }
+        });
+      }
+    });
+  }
+  return categories;
+}
+
+function pushCategory(bucket: string[], value: string) {
+  const token = normalizeCategoryToken(value);
+  if (token) bucket.push(token);
+}
+
+function normalizeCategoryToken(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const parts = trimmed
+    .split(":")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const token = parts.length ? parts[parts.length - 1] : trimmed;
+  return token.replace(/[_\s]+/g, " ");
 }

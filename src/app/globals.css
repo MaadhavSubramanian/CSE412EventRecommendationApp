@@ -479,10 +479,6 @@ textarea.input {
   grid-column: 1 / -1;
 }
 
-.location-control button {
-  width: fit-content;
-}
-
 .location-status {
   margin: 4px 0 0;
   font-size: 13px;

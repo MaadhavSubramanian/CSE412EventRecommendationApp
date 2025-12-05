@@ -2,7 +2,14 @@ import type { PostgrestError, SupabaseClient } from "@supabase/supabase-js";
 import type { EventRow } from "../../src/lib/types";
 import { collectSourceEvents } from "./sources";
 import type { EventSourceConfig, NormalizedEvent } from "./types";
-import { DUMMY_VENUES, pickRandomStatus, pickRandomVenueId } from "./dummyData";
+import {
+  DUMMY_ORGANIZERS,
+  DUMMY_VENUES,
+  pickRandomCategories,
+  pickRandomOrganizerId,
+  pickRandomStatus,
+  pickRandomVenueId,
+} from "./dummyData";
 
 export const DEFAULT_LOOKBACK_DAYS = 30;
 
@@ -38,6 +45,7 @@ type LookupMaps = {
   organizerMap: Map<string, number>;
   venueMap: Map<string, number>;
   dummyVenueIds: number[];
+  dummyOrganizerIds: number[];
 };
 
 type PrepareParams = {
@@ -77,6 +85,7 @@ export async function prepareIngestionRun({
   }
 
   const lookups = await loadLookups(supabase);
+  await ensureGeocodedVenuesForEvents(supabase, deduped, lookups.venueMap);
   const pending = buildPendingInsertList(deduped, configByKey, lookups);
 
   return {
@@ -203,9 +212,10 @@ async function loadLookups(client: SupabaseClient): Promise<LookupMaps> {
     venueMap.set(normalizeName(row.name), row.venue_id);
   });
 
+  const dummyOrganizerIds = await ensureDummyOrganizers(client, organizerMap);
   const dummyVenueIds = await ensureDummyVenues(client, venueMap);
 
-  return { organizerMap, venueMap, dummyVenueIds };
+  return { organizerMap, venueMap, dummyVenueIds, dummyOrganizerIds };
 }
 
 function handlePostgrestError(error: PostgrestError | null) {
@@ -226,11 +236,12 @@ function buildPendingInsertList(
     if (!config) return;
     const payload = buildPayload(event, config, lookups);
     if (!payload) return;
+    const categories = ensureCategories(event, config);
     pending.push({
       normalized: event,
       config,
       payload,
-      categories: event.categories,
+      categories,
     });
   });
 
@@ -263,8 +274,20 @@ function buildPayload(
     return null;
   }
 
+  const organizerId =
+    resolveOrganizerId(event, config, lookups.organizerMap) ??
+    pickRandomOrganizerId(lookups.dummyOrganizerIds);
+
+  if (!organizerId) {
+    console.warn(
+      "[ingest] Unable to resolve organizer for event, skipping:",
+      title,
+    );
+    return null;
+  }
+
   return {
-    organizer_id: resolveOrganizerId(event, config, lookups.organizerMap),
+    organizer_id: organizerId,
     venue_id: resolvedVenueId,
     title,
     description: event.description?.trim() || null,
@@ -337,4 +360,115 @@ async function ensureDummyVenues(
   ).filter((val): val is number => typeof val === "number");
 
   return dummyIds;
+}
+
+async function ensureGeocodedVenuesForEvents(
+  client: SupabaseClient,
+  events: NormalizedEvent[],
+  venueMap: Map<string, number>,
+) {
+  const pendingByKey = new Map<
+    string,
+    {
+      name: string;
+      street_address: string | null;
+      city: string | null;
+      state: string | null;
+      postal_code: string | null;
+      lat: number;
+      lon: number;
+    }
+  >();
+
+  events.forEach((event) => {
+    const key = normalizeName(event.venue ?? undefined);
+    if (!key || venueMap.has(key)) return;
+    if (
+      typeof event.venueLat !== "number" ||
+      typeof event.venueLon !== "number" ||
+      Number.isNaN(event.venueLat) ||
+      Number.isNaN(event.venueLon)
+    ) {
+      return;
+    }
+
+    if (!pendingByKey.has(key)) {
+      pendingByKey.set(key, {
+        name: event.venue ?? "Untitled Venue",
+        street_address: event.venueStreet ?? null,
+        city: event.venueCity ?? null,
+        state: event.venueState ?? null,
+        postal_code: event.venuePostalCode ?? null,
+        lat: event.venueLat,
+        lon: event.venueLon,
+      });
+    }
+  });
+
+  if (!pendingByKey.size) return;
+
+  const { data, error } = await client
+    .from("venue")
+    .insert(Array.from(pendingByKey.values()))
+    .select("venue_id, name");
+  handlePostgrestError(error);
+  (data ?? []).forEach((row) => {
+    venueMap.set(normalizeName(row.name), row.venue_id);
+  });
+}
+
+async function ensureDummyOrganizers(
+  client: SupabaseClient,
+  organizerMap: Map<string, number>,
+) {
+  const missing = DUMMY_ORGANIZERS.filter(
+    (org) => !organizerMap.has(normalizeName(org.org_name)),
+  );
+  if (missing.length) {
+    const { data, error } = await client
+      .from("organizer")
+      .insert(
+        missing.map((org) => ({
+          org_name: org.org_name,
+          website_url: org.website_url ?? null,
+        })),
+      )
+      .select("organizer_id, org_name");
+    handlePostgrestError(error);
+    (data ?? []).forEach((row) => {
+      organizerMap.set(normalizeName(row.org_name), row.organizer_id);
+    });
+  }
+
+  const dummyIds = DUMMY_ORGANIZERS.map((org) =>
+    organizerMap.get(normalizeName(org.org_name)),
+  ).filter((val): val is number => typeof val === "number");
+
+  return dummyIds;
+}
+
+function ensureCategories(
+  event: NormalizedEvent,
+  config: EventSourceConfig,
+): string[] {
+  const normalized = new Set(
+    (event.categories ?? []).map((category) => normalizeCategory(category)),
+  );
+
+  if (!normalized.size && config.tags?.length) {
+    config.tags
+      .map((tag) => normalizeCategory(tag))
+      .filter(Boolean)
+      .forEach((tag) => normalized.add(tag));
+  }
+
+  if (!normalized.size) {
+    pickRandomCategories(2).forEach((category) => normalized.add(category));
+  }
+
+  return Array.from(normalized);
+}
+
+function normalizeCategory(value?: string | null) {
+  return value?.trim().toLowerCase() ?? "";
 }

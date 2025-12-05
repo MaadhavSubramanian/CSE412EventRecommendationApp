@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { EventCard } from "@/components/EventCard";
 import { FilterBar, type Filters } from "@/components/FilterBar";
 import CreateEventModal from "@/components/CreateEventModal";
@@ -12,20 +12,12 @@ type Coordinates = {
   lon: number;
 };
 
-function milesBetween(lat1: number, lon1: number, lat2: number, lon2: number) {
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const R = 3958.8; // Earth radius in miles
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRad(lat1)) *
-      Math.cos(toRad(lat2)) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
+type Stats = {
+  totalEvents: number;
+  scheduledEvents: number;
+  venueCount: number;
+  categoryCount: number;
+};
 
 // create form moved into CreateEventModal component
 
@@ -41,10 +33,12 @@ const emptyFilters: Filters = {
 const PAGE_SIZE = 10;
 
 export default function HomePage() {
+  const [allEvents, setAllEvents] = useState<EventRow[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [organizers, setOrganizers] = useState<OrganizerRow[]>([]);
   const [venues, setVenues] = useState<VenueRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [metaLoading, setMetaLoading] = useState(true);
   // create/save state handled inside the modal
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
@@ -53,41 +47,183 @@ export default function HomePage() {
   const [userLocation, setUserLocation] = useState<Coordinates | null>(null);
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
+  const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
+  const [stats, setStats] = useState<Stats>({
+    totalEvents: 0,
+    scheduledEvents: 0,
+    venueCount: 0,
+    categoryCount: 0,
+  });
 
   useEffect(() => {
-    void loadAll();
+    void Promise.all([loadMeta(), loadAllEvents()]);
   }, []);
 
   useEffect(() => {
-    setPage(1);
-  }, [events, filters, userLocation]);
+    if (!allEvents.length) {
+      setEvents([]);
+      return;
+    }
 
-  async function loadAll() {
+    setLoading(true);
+    setError(null);
+
+    if (filters.radiusMiles && !userLocation) {
+      setEvents([]);
+      setLoading(false);
+      return;
+    }
+
+    try {
+      let filtered = [...allEvents];
+
+      if (filters.status) {
+        filtered = filtered.filter((event) => event.status === filters.status);
+      }
+
+      if (filters.startDate) {
+        const start = new Date(`${filters.startDate}T00:00:00`).getTime();
+        filtered = filtered.filter(
+          (event) => new Date(event.start_at).getTime() >= start,
+        );
+      }
+
+      if (filters.endDate) {
+        const end = new Date(`${filters.endDate}T23:59:59`).getTime();
+        filtered = filtered.filter(
+          (event) => new Date(event.start_at).getTime() <= end,
+        );
+      }
+
+      if (filters.category) {
+        filtered = filtered.filter((event) =>
+          (event.event_category ?? []).some(
+            (cat) => cat.category === filters.category,
+          ),
+        );
+      }
+
+      if (filters.query.trim()) {
+        const term = filters.query.trim().toLowerCase();
+        filtered = filtered.filter((event) => {
+          const haystack = [
+            event.title,
+            event.description ?? "",
+            event.organizer?.org_name ?? "",
+            event.venue?.name ?? "",
+          ]
+            .join(" ")
+            .toLowerCase();
+          return haystack.includes(term);
+        });
+      }
+
+      if (filters.radiusMiles && userLocation) {
+        filtered = filtered.filter((event) => {
+          const venueLat = event.venue?.lat;
+          const venueLon = event.venue?.lon;
+          if (
+            typeof venueLat !== "number" ||
+            typeof venueLon !== "number" ||
+            Number.isNaN(venueLat) ||
+            Number.isNaN(venueLon)
+          ) {
+            return false;
+          }
+          const distance = haversineDistance(
+            userLocation.lat,
+            userLocation.lon,
+            venueLat,
+            venueLon,
+          );
+          return distance <= filters.radiusMiles!;
+        });
+      }
+
+      setEvents(filtered);
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Failed to filter events";
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  }, [filters, userLocation, allEvents]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [filters, userLocation]);
+
+  async function loadMeta() {
+    setMetaLoading(true);
+    try {
+      const [orgRes, venueRes, categoryRes, totalRes, scheduledRes] =
+        await Promise.all([
+          supabase
+            .from("organizer")
+            .select("organizer_id, org_name")
+            .order("org_name", { ascending: true })
+            .limit(10000),
+          supabase
+            .from("venue")
+            .select("venue_id, name")
+            .order("name", { ascending: true })
+            .limit(10000),
+          supabase.from("event_category").select("category").limit(10000),
+          supabase
+            .from("event")
+            .select("event_id", { count: "exact", head: true })
+            .limit(10000),
+          supabase
+            .from("event")
+            .select("event_id", { count: "exact", head: true })
+            .eq("status", "scheduled")
+            .limit(10000),
+        ]);
+
+      if (orgRes.error) throw orgRes.error;
+      if (venueRes.error) throw venueRes.error;
+      if (categoryRes.error) throw categoryRes.error;
+      if (totalRes.error) throw totalRes.error;
+      if (scheduledRes.error) throw scheduledRes.error;
+
+      const categoryList = Array.from(
+        new Set((categoryRes.data ?? []).map((row) => row.category)),
+      )
+        .filter((cat): cat is string => Boolean(cat))
+        .sort((a, b) => a.localeCompare(b));
+
+      setOrganizers((orgRes.data ?? []) as OrganizerRow[]);
+      setVenues((venueRes.data ?? []) as VenueRow[]);
+      setCategoryOptions(categoryList);
+      setStats({
+        totalEvents: totalRes.count ?? 0,
+        scheduledEvents: scheduledRes.count ?? 0,
+        venueCount: venueRes.data?.length ?? 0,
+        categoryCount: categoryList.length,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to load data";
+      setError(msg);
+    } finally {
+      setMetaLoading(false);
+    }
+  }
+
+  async function loadAllEvents() {
     setLoading(true);
     setError(null);
     try {
-      const [eventRes, orgRes, venueRes] = await Promise.all([
-        supabase
-          .from("event")
-          .select(
-            "event_id, organizer_id, venue_id, title, description, start_at, end_at, status, created_at, updated_at, event_category(category), organizer:organizer_id(org_name, website_url), venue:venue_id(name, city, state, street_address, lat, lon)",
-          )
-          .order("start_at", { ascending: true }),
-        supabase
-          .from("organizer")
-          .select("organizer_id, org_name")
-          .order("org_name", { ascending: true }),
-        supabase
-          .from("venue")
-          .select("venue_id, name")
-          .order("name", { ascending: true }),
-      ]);
+      const { data, error: eventError } = await supabase
+        .from("event")
+        .select(
+          "event_id, organizer_id, venue_id, title, description, start_at, end_at, status, created_at, updated_at, event_category(category), organizer:organizer_id(org_name, website_url), venue:venue_id(name, city, state, street_address, lat, lon)",
+        )
+        .order("start_at", { ascending: true })
+        .limit(10000);
+      if (eventError) throw eventError;
 
-      if (eventRes.error) throw eventRes.error;
-      if (orgRes.error) throw orgRes.error;
-      if (venueRes.error) throw venueRes.error;
-
-      const normalizedEvents = (eventRes.data ?? []).map((row) => ({
+      const normalizedEvents = (data ?? []).map((row) => ({
         ...row,
         organizer: Array.isArray(row.organizer)
           ? row.organizer[0] ?? null
@@ -97,84 +233,37 @@ export default function HomePage() {
           : row.venue ?? null,
       })) as EventRow[];
 
+      setAllEvents(normalizedEvents);
       setEvents(normalizedEvents);
-      setOrganizers((orgRes.data ?? []) as OrganizerRow[]);
-      setVenues((venueRes.data ?? []) as VenueRow[]);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to load data";
+      const msg = err instanceof Error ? err.message : "Failed to load events";
       setError(msg);
     } finally {
       setLoading(false);
     }
   }
 
-  const categories = useMemo(() => {
-    const set = new Set<string>();
-    events.forEach((event) =>
-      event.event_category?.forEach((cat) => set.add(cat.category)),
-    );
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [events]);
+  function haversineDistance(
+    lat1: number,
+    lon1: number,
+    lat2: number,
+    lon2: number,
+  ) {
+    const R = 3958.8; // miles
+    const toRad = (deg: number) => (deg * Math.PI) / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  }
 
-  const filteredEvents = useMemo(() => {
-    const term = filters.query.trim().toLowerCase();
-    const startMs = filters.startDate
-      ? new Date(filters.startDate).getTime()
-      : null;
-    const endMs = filters.endDate
-      ? new Date(`${filters.endDate}T23:59:59`).getTime()
-      : null;
-
-    return events.filter((event) => {
-      const startTime = new Date(event.start_at).getTime();
-      const haystack = `${event.title} ${event.description ?? ""} ${
-        event.organizer?.org_name ?? ""
-      } ${event.venue?.name ?? ""} ${(event.event_category ?? [])
-        .map((c) => c.category)
-        .join(" ")}`.toLowerCase();
-
-      if (term && !haystack.includes(term)) return false;
-      if (filters.category) {
-        const hasCategory = event.event_category?.some(
-          (cat) => cat.category === filters.category,
-        );
-        if (!hasCategory) return false;
-      }
-      if (filters.status && event.status !== filters.status) return false;
-      if (startMs && (Number.isNaN(startTime) || startTime < startMs))
-        return false;
-      if (endMs && (Number.isNaN(startTime) || startTime > endMs)) return false;
-      if (filters.radiusMiles) {
-        if (!userLocation) return false;
-        const venueLat = event.venue?.lat ?? null;
-        const venueLon = event.venue?.lon ?? null;
-        if (
-          venueLat === null ||
-          venueLon === null ||
-          Number.isNaN(venueLat) ||
-          Number.isNaN(venueLon)
-        ) {
-          return false;
-        }
-        const distance = milesBetween(
-          userLocation.lat,
-          userLocation.lon,
-          venueLat,
-          venueLon,
-        );
-        if (distance > filters.radiusMiles) return false;
-      }
-
-      return true;
-    });
-  }, [events, filters, userLocation]);
-
-  const totalPages = filteredEvents.length
-    ? Math.ceil(filteredEvents.length / PAGE_SIZE)
-    : 1;
+  const totalPages = events.length ? Math.ceil(events.length / PAGE_SIZE) : 1;
   const currentPage = Math.min(page, totalPages);
   const startIndex = (currentPage - 1) * PAGE_SIZE;
-  const paginatedEvents = filteredEvents.slice(
+  const paginatedEvents: EventRow[] = events.slice(
     startIndex,
     startIndex + PAGE_SIZE,
   );
@@ -187,15 +276,6 @@ export default function HomePage() {
       return next;
     });
   };
-
-  const scheduledCount = useMemo(
-    () => events.filter((ev) => ev.status === "scheduled").length,
-    [events],
-  );
-  const venueCount = useMemo(
-    () => new Set(venues.map((v) => v.name)).size,
-    [venues],
-  );
 
   function handleRequestLocation() {
     if (locating) return;
@@ -244,7 +324,8 @@ export default function HomePage() {
         organizers={organizers}
         venues={venues}
         onCreated={() => {
-          void loadAll();
+          void loadMeta();
+          void loadAllEvents();
         }}
       />
 
@@ -262,7 +343,7 @@ export default function HomePage() {
             <p className="muted">Search, filter, and click into the data.</p>
           </div>
           <span className="pill">
-            {loading ? "Loading..." : `${filteredEvents.length} shown`}
+            {loading ? "Loading..." : `${events.length} shown`}
           </span>
         </div>
 
@@ -271,17 +352,17 @@ export default function HomePage() {
             Create an event
           </button>
           <span className="muted small">
-            {loading
-              ? "Loading events..."
-              : `${events.length} total · ${scheduledCount} scheduled · ${venueCount} venues · ${categories.length} categories`}
+            {metaLoading
+              ? "Loading stats..."
+              : `${stats.totalEvents} total · ${stats.scheduledEvents} scheduled · ${stats.venueCount} venues · ${stats.categoryCount} categories`}
           </span>
         </div>
 
         <FilterBar
-          categories={categories}
+          categories={categoryOptions}
           filters={filters}
           onChange={setFilters}
-          disabled={loading || events.length === 0}
+          disabled={loading}
           hasLocation={Boolean(userLocation)}
           locating={locating}
           onRequestLocation={handleRequestLocation}
@@ -318,11 +399,15 @@ export default function HomePage() {
 
         {loading ? <p className="muted">Loading events…</p> : null}
 
-        {!loading && filteredEvents.length === 0 ? (
-          <p className="muted">No events match those filters.</p>
+        {!loading && events.length === 0 ? (
+          <p className="muted">
+            {filters.radiusMiles && !userLocation
+              ? "Location access is required to apply the distance filter."
+              : "No events match those filters."}
+          </p>
         ) : null}
 
-        {!loading && filteredEvents.length > 0 ? (
+        {!loading && events.length > 0 ? (
           <div className="card-grid">
             {paginatedEvents.map((ev) => (
               <EventCard key={ev.event_id} event={ev} />

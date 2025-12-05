@@ -118,11 +118,13 @@ export function FilterBar({
           <select
             className="input"
             value={filters.radiusMiles ?? ""}
-            onChange={(e) =>
-              update({
-                radiusMiles: e.target.value ? Number(e.target.value) : null,
-              })
-            }
+            onChange={(e) => {
+              const value = e.target.value ? Number(e.target.value) : null;
+              if (value && !hasLocation && !locating) {
+                onRequestLocation();
+              }
+              update({ radiusMiles: value });
+            }}
             disabled={disabled}>
             <option value="">Anywhere</option>
             <option value="5">Within 5 miles</option>
@@ -133,18 +135,13 @@ export function FilterBar({
 
         <div className="field location-control">
           <span>Location</span>
-          <button
-            type="button"
-            className="btn ghost"
-            onClick={onRequestLocation}
-            disabled={disabled || locating}>
+          <p className="location-status">
             {locating
               ? "Locating…"
               : hasLocation
-              ? "Update location"
-              : "Use my location"}
-          </button>
-          <p className="location-status">{locationStatus}</p>
+              ? locationStatus
+              : "Pick a distance filter to request your location."}
+          </p>
         </div>
 
         <div className="filter-actions">

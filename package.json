@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "ingest:server": "tsx ingestion-server/ingest-server.ts"
+    "ingest": "tsx ingestion-server/ingest-server.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.48.0",
