@@ -3,32 +3,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { EventCard } from "@/components/EventCard";
 import { FilterBar, type Filters } from "@/components/FilterBar";
+import CreateEventModal from "@/components/CreateEventModal";
 import { supabase } from "@/lib/supabaseClient";
 import type { EventRow, OrganizerRow, VenueRow } from "@/lib/types";
 
-const STATUSES: EventRow["status"][] = ["scheduled", "postponed", "cancelled"];
-
-type NewEventForm = {
-  title: string;
-  description: string;
-  organizer_id: string;
-  venue_id: string;
-  start_at: string;
-  end_at: string;
-  status: EventRow["status"];
-  categories: string;
-};
-
-const emptyForm: NewEventForm = {
-  title: "",
-  description: "",
-  organizer_id: "",
-  venue_id: "",
-  start_at: "",
-  end_at: "",
-  status: "scheduled",
-  categories: "",
-};
+// create form moved into CreateEventModal component
 
 const emptyFilters: Filters = {
   query: "",
@@ -45,11 +24,11 @@ export default function HomePage() {
   const [organizers, setOrganizers] = useState<OrganizerRow[]>([]);
   const [venues, setVenues] = useState<VenueRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  // create/save state handled inside the modal
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
-  const [form, setForm] = useState<NewEventForm>(emptyForm);
   const [page, setPage] = useState(1);
+  const [showCreate, setShowCreate] = useState(false);
 
   useEffect(() => {
     void loadAll();
@@ -67,7 +46,7 @@ export default function HomePage() {
         supabase
           .from("event")
           .select(
-            "event_id, organizer_id, venue_id, title, description, start_at, end_at, status, created_at, updated_at, event_category(category), organizer:organizer_id(org_name, website_url), venue:venue_id(name, city, state, street_address)"
+            "event_id, organizer_id, venue_id, title, description, start_at, end_at, status, created_at, updated_at, event_category(category), organizer:organizer_id(org_name, website_url), venue:venue_id(name, city, state, street_address)",
           )
           .order("start_at", { ascending: true }),
         supabase
@@ -108,7 +87,7 @@ export default function HomePage() {
   const categories = useMemo(() => {
     const set = new Set<string>();
     events.forEach((event) =>
-      event.event_category?.forEach((cat) => set.add(cat.category))
+      event.event_category?.forEach((cat) => set.add(cat.category)),
     );
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [events]);
@@ -133,7 +112,7 @@ export default function HomePage() {
       if (term && !haystack.includes(term)) return false;
       if (filters.category) {
         const hasCategory = event.event_category?.some(
-          (cat) => cat.category === filters.category
+          (cat) => cat.category === filters.category,
         );
         if (!hasCategory) return false;
       }
@@ -153,7 +132,7 @@ export default function HomePage() {
   const startIndex = (currentPage - 1) * PAGE_SIZE;
   const paginatedEvents = filteredEvents.slice(
     startIndex,
-    startIndex + PAGE_SIZE
+    startIndex + PAGE_SIZE,
   );
 
   const handlePageChange = (delta: number) => {
@@ -167,119 +146,26 @@ export default function HomePage() {
 
   const scheduledCount = useMemo(
     () => events.filter((ev) => ev.status === "scheduled").length,
-    [events]
+    [events],
   );
   const venueCount = useMemo(
     () => new Set(venues.map((v) => v.name)).size,
-    [venues]
+    [venues],
   );
 
-  async function handleCreateEvent(evt: React.FormEvent<HTMLFormElement>) {
-    evt.preventDefault();
-    setSaving(true);
-    setError(null);
-    try {
-      const payload = {
-        title: form.title.trim(),
-        description: form.description.trim() || null,
-        organizer_id: form.organizer_id ? Number(form.organizer_id) : null,
-        venue_id: form.venue_id ? Number(form.venue_id) : null,
-        start_at: form.start_at ? new Date(form.start_at).toISOString() : null,
-        end_at: form.end_at ? new Date(form.end_at).toISOString() : null,
-        status: form.status,
-      };
-
-      if (!payload.title || !payload.start_at || !payload.end_at) {
-        throw new Error("Title, start time, and end time are required.");
-      }
-
-      const { data: inserted, error: insertError } = await supabase
-        .from("event")
-        .insert([payload])
-        .select("event_id")
-        .single();
-
-      if (insertError) throw insertError;
-
-      const newEventId = inserted?.event_id;
-      const cats = form.categories
-        .split(",")
-        .map((c) => c.trim())
-        .filter(Boolean);
-
-      if (newEventId && cats.length) {
-        const catRows = cats.map((category) => ({
-          event_id: newEventId,
-          category,
-        }));
-        const { error: catError } = await supabase
-          .from("event_category")
-          .insert(catRows);
-        if (catError) throw catError;
-      }
-
-      setForm(emptyForm);
-      await loadAll();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to create event";
-      setError(msg);
-    } finally {
-      setSaving(false);
-    }
-  }
+  // create logic moved into CreateEventModal
 
   return (
     <main className="page-shell">
-      <section className="glass hero" id="about">
-        <div className="hero__content">
-          <p className="eyebrow">Event Discovery</p>
-          <h1>Find, create, and manage events.</h1>
-          <p className="lead">
-            Connected to Supabase tables for events, venues, and organizers with
-            filters that mirror your queries.
-          </p>
-          <div className="action-row">
-            <button
-              className="btn"
-              onClick={() => void loadAll()}
-              disabled={loading}
-            >
-              {loading ? "Syncing data..." : "Refresh from Supabase"}
-            </button>
-            <a className="btn secondary" href="#create">
-              Create an event
-            </a>
-            <span className="muted">
-              {loading ? "Loading events..." : `Loaded ${events.length} events`}
-            </span>
-          </div>
-
-          <div className="stat-grid">
-            <div className="stat-card">
-              <div className="stat-label">Total events</div>
-              <div className="stat-value">{loading ? "—" : events.length}</div>
-              <p className="muted">Up to date from Supabase</p>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Scheduled</div>
-              <div className="stat-value">{loading ? "—" : scheduledCount}</div>
-              <p className="muted">Currently planned sessions</p>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Venues</div>
-              <div className="stat-value">{loading ? "—" : venueCount}</div>
-              <p className="muted">Spaces available in the data</p>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Categories</div>
-              <div className="stat-value">
-                {loading ? "—" : categories.length}
-              </div>
-              <p className="muted">Topics attached to events</p>
-            </div>
-          </div>
-        </div>
-      </section>
+      <CreateEventModal
+        isOpen={showCreate}
+        onClose={() => setShowCreate(false)}
+        organizers={organizers}
+        venues={venues}
+        onCreated={() => {
+          void loadAll();
+        }}
+      />
 
       {error ? (
         <div className="alert error">
@@ -287,222 +173,77 @@ export default function HomePage() {
         </div>
       ) : null}
 
-      <section className="split-grid">
-        <div className="panel glass" id="create">
-          <div className="section-header">
-            <div>
-              <p className="eyebrow subtle">Create</p>
-              <h2 className="section-title">Add an event</h2>
-              <p className="muted">
-                Capture details, status, and categories. Organizer and venue
-                options are pulled from Supabase.
-              </p>
-            </div>
-            <span className="pill">
-              Status options: scheduled, postponed, cancelled
-            </span>
+      <section className="panel glass" id="events">
+        <div className="section-header">
+          <div>
+            <p className="eyebrow subtle">Browse</p>
+            <h2 className="section-title">Events</h2>
+            <p className="muted">Search, filter, and click into the data.</p>
           </div>
-
-          <form className="form-stack" onSubmit={handleCreateEvent}>
-            <div className="form-grid">
-              <label className="field">
-                <span>Title</span>
-                <input
-                  className="input"
-                  required
-                  value={form.title}
-                  onChange={(e) => setForm({ ...form, title: e.target.value })}
-                  placeholder="AI for Everyone"
-                />
-              </label>
-              <label className="field">
-                <span>Status</span>
-                <select
-                  className="input"
-                  value={form.status}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      status: e.target.value as EventRow["status"],
-                    })
-                  }
-                >
-                  {STATUSES.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            <label className="field">
-              <span>Description</span>
-              <textarea
-                className="input"
-                rows={3}
-                value={form.description}
-                onChange={(e) =>
-                  setForm({ ...form, description: e.target.value })
-                }
-                placeholder="Intro talk on practical AI tools..."
-              />
-            </label>
-
-            <div className="form-grid">
-              <label className="field">
-                <span>Organizer</span>
-                <select
-                  className="input"
-                  value={form.organizer_id}
-                  onChange={(e) =>
-                    setForm({ ...form, organizer_id: e.target.value })
-                  }
-                >
-                  <option value="">(optional)</option>
-                  {organizers.map((o) => (
-                    <option key={o.organizer_id} value={o.organizer_id}>
-                      {o.org_name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field">
-                <span>Venue</span>
-                <select
-                  className="input"
-                  value={form.venue_id}
-                  onChange={(e) =>
-                    setForm({ ...form, venue_id: e.target.value })
-                  }
-                >
-                  <option value="">(optional)</option>
-                  {venues.map((v) => (
-                    <option key={v.venue_id} value={v.venue_id}>
-                      {v.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            <div className="form-grid">
-              <label className="field">
-                <span>Start time</span>
-                <input
-                  required
-                  className="input"
-                  type="datetime-local"
-                  value={form.start_at}
-                  onChange={(e) =>
-                    setForm({ ...form, start_at: e.target.value })
-                  }
-                />
-              </label>
-              <label className="field">
-                <span>End time</span>
-                <input
-                  required
-                  className="input"
-                  type="datetime-local"
-                  value={form.end_at}
-                  onChange={(e) => setForm({ ...form, end_at: e.target.value })}
-                />
-              </label>
-            </div>
-
-            <label className="field">
-              <span>Categories (comma-separated)</span>
-              <input
-                className="input"
-                value={form.categories}
-                onChange={(e) =>
-                  setForm({ ...form, categories: e.target.value })
-                }
-                placeholder="lecture, tech, community"
-              />
-              <p className="muted small">Stored in the event_category table.</p>
-            </label>
-
-            <div className="form-actions">
-              <button
-                type="button"
-                className="btn ghost"
-                onClick={() => setForm(emptyForm)}
-                disabled={saving}
-              >
-                Reset
-              </button>
-              <button type="submit" className="btn" disabled={saving}>
-                {saving ? "Saving..." : "Create event"}
-              </button>
-            </div>
-          </form>
+          <span className="pill">
+            {loading ? "Loading..." : `${filteredEvents.length} shown`}
+          </span>
         </div>
 
-        <div className="panel glass" id="events">
-          <div className="section-header">
-            <div>
-              <p className="eyebrow subtle">Browse</p>
-              <h2 className="section-title">Events</h2>
-              <p className="muted">Search, filter, and click into the data.</p>
-            </div>
-            <span className="pill">
-              {loading ? "Loading..." : `${filteredEvents.length} shown`}
-            </span>
-          </div>
-
-          <FilterBar
-            categories={categories}
-            filters={filters}
-            onChange={setFilters}
-            disabled={loading || events.length === 0}
-          />
-
-          <div className="action-row">
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={() => handlePageChange(-1)}
-              disabled={loading || currentPage === 1}
-            >
-              Previous
-            </button>
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={() => handlePageChange(1)}
-              disabled={
-                loading ||
-                currentPage === totalPages ||
-                paginatedEvents.length === 0
-              }
-            >
-              Next
-            </button>
-            <span className="muted">
-              {loading
-                ? "Preparing events..."
-                : paginatedEvents.length === 0
-                ? "No events to display"
-                : `Page ${currentPage} of ${totalPages}`}
-            </span>
-          </div>
-
-          {loading ? <p className="muted">Loading events…</p> : null}
-
-          {!loading && filteredEvents.length === 0 ? (
-            <p className="muted">No events match those filters.</p>
-          ) : null}
-
-          {!loading && filteredEvents.length > 0 ? (
-            <div className="card-grid">
-              {paginatedEvents.map((ev) => (
-                <EventCard key={ev.event_id} event={ev} />
-              ))}
-            </div>
-          ) : null}
+        <div className="action-row">
+          <button className="btn secondary" onClick={() => setShowCreate(true)}>
+            Create an event
+          </button>
+          <span className="muted small">
+            {loading
+              ? "Loading events..."
+              : `${events.length} total · ${scheduledCount} scheduled · ${venueCount} venues · ${categories.length} categories`}
+          </span>
         </div>
+
+        <FilterBar
+          categories={categories}
+          filters={filters}
+          onChange={setFilters}
+          disabled={loading || events.length === 0}
+        />
+
+        <div className="action-row">
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => handlePageChange(-1)}
+            disabled={loading || currentPage === 1}>
+            Previous
+          </button>
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => handlePageChange(1)}
+            disabled={
+              loading ||
+              currentPage === totalPages ||
+              paginatedEvents.length === 0
+            }>
+            Next
+          </button>
+          <span className="muted">
+            {loading
+              ? "Preparing events..."
+              : paginatedEvents.length === 0
+              ? "No events to display"
+              : `Page ${currentPage} of ${totalPages}`}
+          </span>
+        </div>
+
+        {loading ? <p className="muted">Loading events…</p> : null}
+
+        {!loading && filteredEvents.length === 0 ? (
+          <p className="muted">No events match those filters.</p>
+        ) : null}
+
+        {!loading && filteredEvents.length > 0 ? (
+          <div className="card-grid">
+            {paginatedEvents.map((ev) => (
+              <EventCard key={ev.event_id} event={ev} />
+            ))}
+          </div>
+        ) : null}
       </section>
     </main>
   );

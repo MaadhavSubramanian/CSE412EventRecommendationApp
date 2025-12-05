@@ -43,7 +43,7 @@ export function FilterBar({ categories, filters, onChange, disabled }: Props) {
         />
       </label>
 
-      <div className="filter-row">
+      <div className="filter-grid">
         <label className="field">
           <span>Category</span>
           <select
@@ -62,6 +62,28 @@ export function FilterBar({ categories, filters, onChange, disabled }: Props) {
         </label>
 
         <label className="field">
+          <span>Starts after</span>
+          <input
+            type="date"
+            className="input"
+            value={filters.startDate}
+            onChange={(e) => update({ startDate: e.target.value })}
+            disabled={disabled}
+          />
+        </label>
+
+        <label className="field">
+          <span>Starts before</span>
+          <input
+            type="date"
+            className="input"
+            value={filters.endDate}
+            onChange={(e) => update({ endDate: e.target.value })}
+            disabled={disabled}
+          />
+        </label>
+
+        <label className="field">
           <span>Status</span>
           <select
             className="input"
@@ -74,29 +96,6 @@ export function FilterBar({ categories, filters, onChange, disabled }: Props) {
             <option value="postponed">Postponed</option>
             <option value="cancelled">Cancelled</option>
           </select>
-        </label>
-      </div>
-
-      <div className="filter-row">
-        <label className="field">
-          <span>Starts after</span>
-          <input
-            type="date"
-            className="input"
-            value={filters.startDate}
-            onChange={(e) => update({ startDate: e.target.value })}
-            disabled={disabled}
-          />
-        </label>
-        <label className="field">
-          <span>Starts before</span>
-          <input
-            type="date"
-            className="input"
-            value={filters.endDate}
-            onChange={(e) => update({ endDate: e.target.value })}
-            disabled={disabled}
-          />
         </label>
 
         <div className="filter-actions">
