@@ -27,7 +27,7 @@ const emptyForm: NewEventForm = {
   start_at: "",
   end_at: "",
   status: "scheduled",
-  categories: ""
+  categories: "",
 };
 
 const emptyFilters: Filters = {
@@ -35,8 +35,10 @@ const emptyFilters: Filters = {
   category: "",
   status: "",
   startDate: "",
-  endDate: ""
+  endDate: "",
 };
+
+const PAGE_SIZE = 10;
 
 export default function HomePage() {
   const [events, setEvents] = useState<EventRow[]>([]);
@@ -47,10 +49,15 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [form, setForm] = useState<NewEventForm>(emptyForm);
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     void loadAll();
   }, []);
+
+  useEffect(() => {
+    setPage(1);
+  }, [events, filters]);
 
   async function loadAll() {
     setLoading(true);
@@ -67,16 +74,29 @@ export default function HomePage() {
           .from("organizer")
           .select("organizer_id, org_name")
           .order("org_name", { ascending: true }),
-        supabase.from("venue").select("venue_id, name").order("name", { ascending: true })
+        supabase
+          .from("venue")
+          .select("venue_id, name")
+          .order("name", { ascending: true }),
       ]);
 
       if (eventRes.error) throw eventRes.error;
       if (orgRes.error) throw orgRes.error;
       if (venueRes.error) throw venueRes.error;
 
-      setEvents(eventRes.data ?? []);
-      setOrganizers(orgRes.data ?? []);
-      setVenues(venueRes.data ?? []);
+      const normalizedEvents = (eventRes.data ?? []).map((row) => ({
+        ...row,
+        organizer: Array.isArray(row.organizer)
+          ? row.organizer[0] ?? null
+          : row.organizer ?? null,
+        venue: Array.isArray(row.venue)
+          ? row.venue[0] ?? null
+          : row.venue ?? null,
+      })) as EventRow[];
+
+      setEvents(normalizedEvents);
+      setOrganizers((orgRes.data ?? []) as OrganizerRow[]);
+      setVenues((venueRes.data ?? []) as VenueRow[]);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to load data";
       setError(msg);
@@ -95,7 +115,9 @@ export default function HomePage() {
 
   const filteredEvents = useMemo(() => {
     const term = filters.query.trim().toLowerCase();
-    const startMs = filters.startDate ? new Date(filters.startDate).getTime() : null;
+    const startMs = filters.startDate
+      ? new Date(filters.startDate).getTime()
+      : null;
     const endMs = filters.endDate
       ? new Date(`${filters.endDate}T23:59:59`).getTime()
       : null;
@@ -116,12 +138,32 @@ export default function HomePage() {
         if (!hasCategory) return false;
       }
       if (filters.status && event.status !== filters.status) return false;
-      if (startMs && (Number.isNaN(startTime) || startTime < startMs)) return false;
+      if (startMs && (Number.isNaN(startTime) || startTime < startMs))
+        return false;
       if (endMs && (Number.isNaN(startTime) || startTime > endMs)) return false;
 
       return true;
     });
   }, [events, filters]);
+
+  const totalPages = filteredEvents.length
+    ? Math.ceil(filteredEvents.length / PAGE_SIZE)
+    : 1;
+  const currentPage = Math.min(page, totalPages);
+  const startIndex = (currentPage - 1) * PAGE_SIZE;
+  const paginatedEvents = filteredEvents.slice(
+    startIndex,
+    startIndex + PAGE_SIZE
+  );
+
+  const handlePageChange = (delta: number) => {
+    setPage((prev) => {
+      const next = prev + delta;
+      if (next < 1) return 1;
+      if (next > totalPages) return totalPages;
+      return next;
+    });
+  };
 
   const scheduledCount = useMemo(
     () => events.filter((ev) => ev.status === "scheduled").length,
@@ -144,7 +186,7 @@ export default function HomePage() {
         venue_id: form.venue_id ? Number(form.venue_id) : null,
         start_at: form.start_at ? new Date(form.start_at).toISOString() : null,
         end_at: form.end_at ? new Date(form.end_at).toISOString() : null,
-        status: form.status
+        status: form.status,
       };
 
       if (!payload.title || !payload.start_at || !payload.end_at) {
@@ -166,8 +208,13 @@ export default function HomePage() {
         .filter(Boolean);
 
       if (newEventId && cats.length) {
-        const catRows = cats.map((category) => ({ event_id: newEventId, category }));
-        const { error: catError } = await supabase.from("event_category").insert(catRows);
+        const catRows = cats.map((category) => ({
+          event_id: newEventId,
+          category,
+        }));
+        const { error: catError } = await supabase
+          .from("event_category")
+          .insert(catRows);
         if (catError) throw catError;
       }
 
@@ -188,11 +235,15 @@ export default function HomePage() {
           <p className="eyebrow">Event Discovery</p>
           <h1>Find, create, and manage events.</h1>
           <p className="lead">
-            Connected to Supabase tables for events, venues, and organizers with filters that
-            mirror your queries.
+            Connected to Supabase tables for events, venues, and organizers with
+            filters that mirror your queries.
           </p>
           <div className="action-row">
-            <button className="btn" onClick={() => void loadAll()} disabled={loading}>
+            <button
+              className="btn"
+              onClick={() => void loadAll()}
+              disabled={loading}
+            >
               {loading ? "Syncing data..." : "Refresh from Supabase"}
             </button>
             <a className="btn secondary" href="#create">
@@ -221,7 +272,9 @@ export default function HomePage() {
             </div>
             <div className="stat-card">
               <div className="stat-label">Categories</div>
-              <div className="stat-value">{loading ? "—" : categories.length}</div>
+              <div className="stat-value">
+                {loading ? "—" : categories.length}
+              </div>
               <p className="muted">Topics attached to events</p>
             </div>
           </div>
@@ -241,11 +294,13 @@ export default function HomePage() {
               <p className="eyebrow subtle">Create</p>
               <h2 className="section-title">Add an event</h2>
               <p className="muted">
-                Capture details, status, and categories. Organizer and venue options are pulled
-                from Supabase.
+                Capture details, status, and categories. Organizer and venue
+                options are pulled from Supabase.
               </p>
             </div>
-            <span className="pill">Status options: scheduled, postponed, cancelled</span>
+            <span className="pill">
+              Status options: scheduled, postponed, cancelled
+            </span>
           </div>
 
           <form className="form-stack" onSubmit={handleCreateEvent}>
@@ -265,7 +320,12 @@ export default function HomePage() {
                 <select
                   className="input"
                   value={form.status}
-                  onChange={(e) => setForm({ ...form, status: e.target.value as EventRow["status"] })}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      status: e.target.value as EventRow["status"],
+                    })
+                  }
                 >
                   {STATUSES.map((s) => (
                     <option key={s} value={s}>
@@ -282,7 +342,9 @@ export default function HomePage() {
                 className="input"
                 rows={3}
                 value={form.description}
-                onChange={(e) => setForm({ ...form, description: e.target.value })}
+                onChange={(e) =>
+                  setForm({ ...form, description: e.target.value })
+                }
                 placeholder="Intro talk on practical AI tools..."
               />
             </label>
@@ -293,7 +355,9 @@ export default function HomePage() {
                 <select
                   className="input"
                   value={form.organizer_id}
-                  onChange={(e) => setForm({ ...form, organizer_id: e.target.value })}
+                  onChange={(e) =>
+                    setForm({ ...form, organizer_id: e.target.value })
+                  }
                 >
                   <option value="">(optional)</option>
                   {organizers.map((o) => (
@@ -308,7 +372,9 @@ export default function HomePage() {
                 <select
                   className="input"
                   value={form.venue_id}
-                  onChange={(e) => setForm({ ...form, venue_id: e.target.value })}
+                  onChange={(e) =>
+                    setForm({ ...form, venue_id: e.target.value })
+                  }
                 >
                   <option value="">(optional)</option>
                   {venues.map((v) => (
@@ -328,7 +394,9 @@ export default function HomePage() {
                   className="input"
                   type="datetime-local"
                   value={form.start_at}
-                  onChange={(e) => setForm({ ...form, start_at: e.target.value })}
+                  onChange={(e) =>
+                    setForm({ ...form, start_at: e.target.value })
+                  }
                 />
               </label>
               <label className="field">
@@ -348,7 +416,9 @@ export default function HomePage() {
               <input
                 className="input"
                 value={form.categories}
-                onChange={(e) => setForm({ ...form, categories: e.target.value })}
+                onChange={(e) =>
+                  setForm({ ...form, categories: e.target.value })
+                }
                 placeholder="lecture, tech, community"
               />
               <p className="muted small">Stored in the event_category table.</p>
@@ -389,6 +459,36 @@ export default function HomePage() {
             disabled={loading || events.length === 0}
           />
 
+          <div className="action-row">
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={() => handlePageChange(-1)}
+              disabled={loading || currentPage === 1}
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={() => handlePageChange(1)}
+              disabled={
+                loading ||
+                currentPage === totalPages ||
+                paginatedEvents.length === 0
+              }
+            >
+              Next
+            </button>
+            <span className="muted">
+              {loading
+                ? "Preparing events..."
+                : paginatedEvents.length === 0
+                ? "No events to display"
+                : `Page ${currentPage} of ${totalPages}`}
+            </span>
+          </div>
+
           {loading ? <p className="muted">Loading events…</p> : null}
 
           {!loading && filteredEvents.length === 0 ? (
@@ -397,7 +497,7 @@ export default function HomePage() {
 
           {!loading && filteredEvents.length > 0 ? (
             <div className="card-grid">
-              {filteredEvents.map((ev) => (
+              {paginatedEvents.map((ev) => (
                 <EventCard key={ev.event_id} event={ev} />
               ))}
             </div>

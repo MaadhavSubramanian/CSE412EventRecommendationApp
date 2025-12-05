@@ -6,16 +6,21 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "ingest:server": "tsx ingestion-server/ingest-server.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.48.0",
+    "dotenv": "^17.2.3",
     "json-schema-traverse": "^1.0.0",
     "json-stable-stringify-without-jsonify": "^1.0.1",
     "keyv": "^5.5.5",
     "next": "14.2.14",
+    "node-ical": "^0.22.1",
     "react": "18.2.0",
-    "react-dom": "18.2.0"
+    "react-dom": "18.2.0",
+    "rss-parser": "^3.13.0",
+    "zod": "^4.1.13"
   },
   "devDependencies": {
     "@types/node": "^20.14.11",
@@ -23,6 +28,7 @@
     "@types/react-dom": "^18.3.0",
     "eslint": "^8.57.1",
     "eslint-config-next": "14.2.14",
+    "tsx": "^4.21.0",
     "typescript": "^5.6.3"
   }
 }

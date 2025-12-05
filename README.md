@@ -35,3 +35,15 @@ npm run dev
 - `npm run dev` — start Next.js dev server
 - `npm run lint` — run ESLint
 - `npm run build && npm start` — production build + serve
+- `npm run ingest:server` — start the polling server for Sun Devil Central events
+
+## Ingestion pipeline
+- Scripts live under `scripts/` with shared helpers in `scripts/ingestion/*`.
+- Provide Supabase credentials via `SUPABASE_SERVICE_ROLE_KEY` (and optionally `INGEST_SUPABASE_URL`).
+- Start the long-running server via `npm run ingest:server` to poll the Sun Devil Central ICS feed on an interval (default 15 minutes).
+- Server-specific env overrides:
+	- `SUN_DEVIL_ICS_URL` — override the feed URL.
+	- `INGEST_POLL_MINUTES` — minutes between polls (default 15).
+	- `INGEST_LOOKBACK_DAYS` — dedupe window (default 30).
+	- `SUN_DEVIL_EVENT_DURATION_MINUTES` — fallback duration when an event lacks an end time (default 120).
+- See `docs/ingestion-pipeline.md` for architecture details and future enhancements.
