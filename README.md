@@ -1,5 +1,5 @@
 # CSE412 Event Recommendation App
-Authors: Maadhava Subramanian, Dens Sumesh, Basel Kourian.
+Authors: Maadhava Subramanian, Dens Sumesh, Basel Kurian.
 
 A minimal Next.js + Supabase dashboard for the course project. It connects to your existing Supabase instance and lets you browse/search events and create new events with categories, organizer, and venue.
 

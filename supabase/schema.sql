@@ -1,6 +1,3 @@
--- WARNING: This schema is for context only and is not meant to be run.
--- Table order and constraints may not be valid for execution.
-
 CREATE TABLE public.app_user (
   user_id bigint NOT NULL DEFAULT nextval('app_user_user_id_seq'::regclass),
   role USER-DEFINED NOT NULL DEFAULT 'visitor'::user_role,
