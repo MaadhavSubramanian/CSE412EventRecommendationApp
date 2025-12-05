@@ -1,18 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { EventCard } from "@/components/EventCard";
+import { FilterBar, type Filters } from "@/components/FilterBar";
 import { supabase } from "@/lib/supabaseClient";
 import type { EventRow, OrganizerRow, VenueRow } from "@/lib/types";
 
 const STATUSES: EventRow["status"][] = ["scheduled", "postponed", "cancelled"];
-
-function formatDate(value: string) {
-  const d = new Date(value);
-  return d.toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short"
-  });
-}
 
 type NewEventForm = {
   title: string;
@@ -36,6 +30,14 @@ const emptyForm: NewEventForm = {
   categories: ""
 };
 
+const emptyFilters: Filters = {
+  query: "",
+  category: "",
+  status: "",
+  startDate: "",
+  endDate: ""
+};
+
 export default function HomePage() {
   const [events, setEvents] = useState<EventRow[]>([]);
   const [organizers, setOrganizers] = useState<OrganizerRow[]>([]);
@@ -43,7 +45,7 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
+  const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [form, setForm] = useState<NewEventForm>(emptyForm);
 
   useEffect(() => {
@@ -83,17 +85,52 @@ export default function HomePage() {
     }
   }
 
+  const categories = useMemo(() => {
+    const set = new Set<string>();
+    events.forEach((event) =>
+      event.event_category?.forEach((cat) => set.add(cat.category))
+    );
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [events]);
+
   const filteredEvents = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    if (!term) return events;
-    return events.filter((e) => {
-      const haystack =
-        `${e.title} ${e.description ?? ""} ${(e.event_category ?? [])
-          .map((c) => c.category)
-          .join(" ")}`.toLowerCase();
-      return haystack.includes(term);
+    const term = filters.query.trim().toLowerCase();
+    const startMs = filters.startDate ? new Date(filters.startDate).getTime() : null;
+    const endMs = filters.endDate
+      ? new Date(`${filters.endDate}T23:59:59`).getTime()
+      : null;
+
+    return events.filter((event) => {
+      const startTime = new Date(event.start_at).getTime();
+      const haystack = `${event.title} ${event.description ?? ""} ${
+        event.organizer?.org_name ?? ""
+      } ${event.venue?.name ?? ""} ${(event.event_category ?? [])
+        .map((c) => c.category)
+        .join(" ")}`.toLowerCase();
+
+      if (term && !haystack.includes(term)) return false;
+      if (filters.category) {
+        const hasCategory = event.event_category?.some(
+          (cat) => cat.category === filters.category
+        );
+        if (!hasCategory) return false;
+      }
+      if (filters.status && event.status !== filters.status) return false;
+      if (startMs && (Number.isNaN(startTime) || startTime < startMs)) return false;
+      if (endMs && (Number.isNaN(startTime) || startTime > endMs)) return false;
+
+      return true;
     });
-  }, [events, search]);
+  }, [events, filters]);
+
+  const scheduledCount = useMemo(
+    () => events.filter((ev) => ev.status === "scheduled").length,
+    [events]
+  );
+  const venueCount = useMemo(
+    () => new Set(venues.map((v) => v.name)).size,
+    [venues]
+  );
 
   async function handleCreateEvent(evt: React.FormEvent<HTMLFormElement>) {
     evt.preventDefault();
@@ -145,43 +182,102 @@ export default function HomePage() {
   }
 
   return (
-    <main className="page">
-      <div className="title">
-        <div>
-          <h1>Event Recommendation Dashboard</h1>
-          <div className="muted">Connected to Supabase (events, venues, organizers)</div>
+    <main className="page-shell">
+      <section className="glass hero" id="about">
+        <div className="hero__content">
+          <p className="eyebrow">Event Discovery</p>
+          <h1>Find, create, and manage events.</h1>
+          <p className="lead">
+            Connected to Supabase tables for events, venues, and organizers with filters that
+            mirror your queries.
+          </p>
+          <div className="action-row">
+            <button className="btn" onClick={() => void loadAll()} disabled={loading}>
+              {loading ? "Syncing data..." : "Refresh from Supabase"}
+            </button>
+            <a className="btn secondary" href="#create">
+              Create an event
+            </a>
+            <span className="muted">
+              {loading ? "Loading events..." : `Loaded ${events.length} events`}
+            </span>
+          </div>
+
+          <div className="stat-grid">
+            <div className="stat-card">
+              <div className="stat-label">Total events</div>
+              <div className="stat-value">{loading ? "—" : events.length}</div>
+              <p className="muted">Up to date from Supabase</p>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Scheduled</div>
+              <div className="stat-value">{loading ? "—" : scheduledCount}</div>
+              <p className="muted">Currently planned sessions</p>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Venues</div>
+              <div className="stat-value">{loading ? "—" : venueCount}</div>
+              <p className="muted">Spaces available in the data</p>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Categories</div>
+              <div className="stat-value">{loading ? "—" : categories.length}</div>
+              <p className="muted">Topics attached to events</p>
+            </div>
+          </div>
         </div>
-        <button className="btn secondary" onClick={() => void loadAll()} disabled={loading}>
-          Refresh
-        </button>
-      </div>
+      </section>
 
       {error ? (
-        <div className="card" style={{ borderColor: "#ef4444", color: "#fecdd3" }}>
+        <div className="alert error">
           <strong>Error:</strong> {error}
         </div>
       ) : null}
 
-      <div className="grid" style={{ marginBottom: 20 }}>
-        <div className="card">
-          <div className="title">
-            <h3>Create Event</h3>
-            <span className="muted">Status values: scheduled, postponed, cancelled</span>
+      <section className="split-grid">
+        <div className="panel glass" id="create">
+          <div className="section-header">
+            <div>
+              <p className="eyebrow subtle">Create</p>
+              <h2 className="section-title">Add an event</h2>
+              <p className="muted">
+                Capture details, status, and categories. Organizer and venue options are pulled
+                from Supabase.
+              </p>
+            </div>
+            <span className="pill">Status options: scheduled, postponed, cancelled</span>
           </div>
-          <form className="grid" onSubmit={handleCreateEvent}>
-            <div className="grid">
-              <label className="label">Title</label>
-              <input
-                className="input"
-                required
-                value={form.title}
-                onChange={(e) => setForm({ ...form, title: e.target.value })}
-                placeholder="AI for Everyone"
-              />
+
+          <form className="form-stack" onSubmit={handleCreateEvent}>
+            <div className="form-grid">
+              <label className="field">
+                <span>Title</span>
+                <input
+                  className="input"
+                  required
+                  value={form.title}
+                  onChange={(e) => setForm({ ...form, title: e.target.value })}
+                  placeholder="AI for Everyone"
+                />
+              </label>
+              <label className="field">
+                <span>Status</span>
+                <select
+                  className="input"
+                  value={form.status}
+                  onChange={(e) => setForm({ ...form, status: e.target.value as EventRow["status"] })}
+                >
+                  {STATUSES.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
 
-            <div className="grid">
-              <label className="label">Description</label>
+            <label className="field">
+              <span>Description</span>
               <textarea
                 className="input"
                 rows={3}
@@ -189,11 +285,11 @@ export default function HomePage() {
                 onChange={(e) => setForm({ ...form, description: e.target.value })}
                 placeholder="Intro talk on practical AI tools..."
               />
-            </div>
+            </label>
 
-            <div className="form-row">
-              <div className="grid">
-                <label className="label">Organizer</label>
+            <div className="form-grid">
+              <label className="field">
+                <span>Organizer</span>
                 <select
                   className="input"
                   value={form.organizer_id}
@@ -206,9 +302,9 @@ export default function HomePage() {
                     </option>
                   ))}
                 </select>
-              </div>
-              <div className="grid">
-                <label className="label">Venue</label>
+              </label>
+              <label className="field">
+                <span>Venue</span>
                 <select
                   className="input"
                   value={form.venue_id}
@@ -221,12 +317,12 @@ export default function HomePage() {
                     </option>
                   ))}
                 </select>
-              </div>
+              </label>
             </div>
 
-            <div className="form-row">
-              <div className="grid">
-                <label className="label">Start time</label>
+            <div className="form-grid">
+              <label className="field">
+                <span>Start time</span>
                 <input
                   required
                   className="input"
@@ -234,9 +330,9 @@ export default function HomePage() {
                   value={form.start_at}
                   onChange={(e) => setForm({ ...form, start_at: e.target.value })}
                 />
-              </div>
-              <div className="grid">
-                <label className="label">End time</label>
+              </label>
+              <label className="field">
+                <span>End time</span>
                 <input
                   required
                   className="input"
@@ -244,37 +340,24 @@ export default function HomePage() {
                   value={form.end_at}
                   onChange={(e) => setForm({ ...form, end_at: e.target.value })}
                 />
-              </div>
-              <div className="grid">
-                <label className="label">Status</label>
-                <select
-                  className="input"
-                  value={form.status}
-                  onChange={(e) => setForm({ ...form, status: e.target.value as EventRow["status"] })}
-                >
-                  {STATUSES.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              </label>
             </div>
 
-            <div className="grid">
-              <label className="label">Categories (comma-separated)</label>
+            <label className="field">
+              <span>Categories (comma-separated)</span>
               <input
                 className="input"
                 value={form.categories}
                 onChange={(e) => setForm({ ...form, categories: e.target.value })}
-                placeholder="lecture, tech"
+                placeholder="lecture, tech, community"
               />
-            </div>
+              <p className="muted small">Stored in the event_category table.</p>
+            </label>
 
-            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <div className="form-actions">
               <button
                 type="button"
-                className="btn secondary"
+                className="btn ghost"
                 onClick={() => setForm(emptyForm)}
                 disabled={saving}
               >
@@ -287,63 +370,40 @@ export default function HomePage() {
           </form>
         </div>
 
-        <div className="card">
-          <div className="title">
-            <h3>Events</h3>
-            <input
-              className="input"
-              style={{ maxWidth: 260 }}
-              placeholder="Search by title/description/category"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
+        <div className="panel glass" id="events">
+          <div className="section-header">
+            <div>
+              <p className="eyebrow subtle">Browse</p>
+              <h2 className="section-title">Events</h2>
+              <p className="muted">Search, filter, and click into the data.</p>
+            </div>
+            <span className="pill">
+              {loading ? "Loading..." : `${filteredEvents.length} shown`}
+            </span>
           </div>
 
-          {loading ? (
-            <div className="muted">Loading events…</div>
-          ) : filteredEvents.length === 0 ? (
-            <div className="muted">No events found.</div>
-          ) : (
-            <div className="grid">
+          <FilterBar
+            categories={categories}
+            filters={filters}
+            onChange={setFilters}
+            disabled={loading || events.length === 0}
+          />
+
+          {loading ? <p className="muted">Loading events…</p> : null}
+
+          {!loading && filteredEvents.length === 0 ? (
+            <p className="muted">No events match those filters.</p>
+          ) : null}
+
+          {!loading && filteredEvents.length > 0 ? (
+            <div className="card-grid">
               {filteredEvents.map((ev) => (
-                <div key={ev.event_id} className="card" style={{ borderColor: "#1f2937" }}>
-                  <div className="title" style={{ marginBottom: 8 }}>
-                    <div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <h3 style={{ margin: 0 }}>{ev.title}</h3>
-                        <span className={`status ${ev.status}`}>{ev.status}</span>
-                      </div>
-                      <div className="muted">
-                        {formatDate(ev.start_at)} → {formatDate(ev.end_at)}
-                      </div>
-                    </div>
-                    <div className="badge">#{ev.event_id}</div>
-                  </div>
-
-                  <p style={{ marginTop: 0 }}>{ev.description}</p>
-
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
-                    {ev.event_category?.map((c) => (
-                      <span key={c.category} className="pill">
-                        {c.category}
-                      </span>
-                    )) || <span className="muted">No categories</span>}
-                  </div>
-
-                  <div className="muted">
-                    {ev.organizer?.org_name ? `Organizer: ${ev.organizer.org_name}` : "No organizer"}
-                    {" • "}
-                    {ev.venue?.name
-                      ? `Venue: ${ev.venue.name}${ev.venue.city ? ` (${ev.venue.city}${ev.venue.state ? ", " + ev.venue.state : ""})` : ""
-                        }`
-                      : "No venue"}
-                  </div>
-                </div>
+                <EventCard key={ev.event_id} event={ev} />
               ))}
             </div>
-          )}
+          ) : null}
         </div>
-      </div>
+      </section>
     </main>
   );
 }

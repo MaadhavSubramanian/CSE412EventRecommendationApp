@@ -1,5 +1,6 @@
 import './globals.css';
 import type { Metadata } from 'next';
+import { NavBar } from '@/components/NavBar';
 
 export const metadata: Metadata = {
   title: 'CSE412 Event Recommendation',
@@ -13,7 +14,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body className="app-shell">
+        <NavBar />
+        {children}
+      </body>
     </html>
   );
 }
